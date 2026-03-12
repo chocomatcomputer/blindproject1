@@ -5,15 +5,15 @@ import android.graphics.Matrix
 import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import com.example.blindproject1.ml.DetectedObject
 import com.example.blindproject1.ml.ObjectDetectorHelper
-import org.tensorflow.lite.task.vision.detector.Detection
 
 /**
  * CameraX ImageAnalyzer that feeds frames to our TFLite Object Detector.
  */
 class CameraAnalyzer(
     private val objectDetectorHelper: ObjectDetectorHelper,
-    private val onResults: (List<Detection>, Bitmap) -> Unit
+    private val onResults: (List<DetectedObject>, Bitmap) -> Unit
 ) : ImageAnalysis.Analyzer {
 
     private var lastAnalyzedTimestamp = 0L

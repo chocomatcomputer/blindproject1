@@ -20,6 +20,8 @@ import com.example.blindproject1.audio.AudioEngine
 import com.example.blindproject1.audio.TTSManager
 import com.example.blindproject1.audio.VoiceCommandManager
 import com.example.blindproject1.haptics.HapticManager
+import com.example.blindproject1.ml.DetectedObject
+import com.example.blindproject1.ml.DetectionPolicy
 import com.example.blindproject1.ml.ModelDownloader
 import com.example.blindproject1.ml.ObjectDetectorHelper
 import com.example.blindproject1.network.TMapRepository
@@ -37,7 +39,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.tensorflow.lite.task.vision.detector.Detection
 import java.util.Locale
 import javax.inject.Inject
 import kotlin.math.abs
@@ -84,8 +85,8 @@ class MainViewModel @Inject constructor(
     private val _isNavigating = MutableStateFlow(false)
     val isNavigating: StateFlow<Boolean> = _isNavigating.asStateFlow()
 
-    private val _detectedObjects = MutableStateFlow<List<Detection>>(emptyList())
-    val detectedObjects: StateFlow<List<Detection>> = _detectedObjects.asStateFlow()
+    private val _detectedObjects = MutableStateFlow<List<DetectedObject>>(emptyList())
+    val detectedObjects: StateFlow<List<DetectedObject>> = _detectedObjects.asStateFlow()
 
     private val _selectedImage = MutableStateFlow<Bitmap?>(null)
     val selectedImage: StateFlow<Bitmap?> = _selectedImage.asStateFlow()
@@ -109,6 +110,7 @@ class MainViewModel @Inject constructor(
     private var isWaitingAtCrosswalk = false
     private var lastTrafficLightState = ""
     private var lastTTSWarningTime = 0L
+    private val detectionPolicy = DetectionPolicy()
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -276,7 +278,7 @@ class MainViewModel @Inject constructor(
         stopDangerFeedback()
     }
     
-    fun processLiveCameraFrame(results: List<Detection>, bitmap: Bitmap) {
+    fun processLiveCameraFrame(results: List<DetectedObject>, bitmap: Bitmap) {
         viewModelScope.launch(Dispatchers.Main) {
             _detectedObjects.value = results
             _selectedImage.value = bitmap
@@ -284,7 +286,7 @@ class MainViewModel @Inject constructor(
         }
     }
     
-    private fun processVisionResults(results: List<Detection>, bitmap: Bitmap, imgWidth: Int, imgHeight: Int) {
+    private fun processVisionResults(results: List<DetectedObject>, bitmap: Bitmap, imgWidth: Int, imgHeight: Int) {
         if (results.isEmpty()) {
             if (!isWaitingAtCrosswalk) {
                 disableDangerMode()
@@ -298,16 +300,17 @@ class MainViewModel @Inject constructor(
             return
         }
 
-        var trafficLightDetected = false
         val currentTime = System.currentTimeMillis()
 
         for (detection in results) {
-            val label = detection.categories.firstOrNull()?.label ?: continue
+            val label = detection.label
             val box = detection.boundingBox
             val heightFraction = box.height() / imgHeight
 
-            if (label == "traffic light" && heightFraction > 0.1) { 
-                trafficLightDetected = true
+            if (label == "traffic light" &&
+                detection.score >= detectionPolicy.minConfidence &&
+                heightFraction > detectionPolicy.trafficLightHeightFraction
+            ) {
                 val colorState = analyzeTrafficLightColor(bitmap, box)
                 
                 if (colorState == "RED" && lastTrafficLightState != "RED") {
@@ -327,19 +330,23 @@ class MainViewModel @Inject constructor(
 
         if (isWaitingAtCrosswalk) return
 
-        val importantLabels = listOf("person", "car", "motorcycle", "bicycle", "truck", "bus")
         val translationMap = mapOf(
             "person" to "사람", "car" to "자동차", "motorcycle" to "오토바이",
-            "bicycle" to "자전거", "truck" to "트럭", "bus" to "버스"
+            "bicycle" to "자전거", "truck" to "트럭", "bus" to "버스",
+            "bench" to "장애물", "chair" to "장애물"
         )
         
         val criticalObject = results
-            .filter { importantLabels.contains(it.categories.firstOrNull()?.label) }
+            .filter {
+                it.label != "traffic light" &&
+                    it.label in detectionPolicy.importantLabels &&
+                    it.score >= detectionPolicy.minConfidence
+            }
             .maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
 
         if (criticalObject != null) {
             val box = criticalObject.boundingBox
-            val label = criticalObject.categories.firstOrNull()?.label ?: "물체"
+            val label = criticalObject.label.ifEmpty { "물체" }
             val koreanLabel = translationMap[label] ?: label
             
             val centerX = box.centerX()
@@ -348,7 +355,7 @@ class MainViewModel @Inject constructor(
             
             val heightFraction = box.height() / imgHeight
             
-            if (heightFraction > 0.15) { 
+            if (heightFraction > detectionPolicy.nearObjectHeightFraction) {
                 _relativeBearing.value = angle
                 audioEngine.updateDirection(angle)
                 if (!_isDangerMode.value) {

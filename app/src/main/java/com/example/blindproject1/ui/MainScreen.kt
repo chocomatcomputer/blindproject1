@@ -448,7 +448,7 @@ fun MainScreen(
                                             
                                             detectedObjects.forEach { detection ->
                                                 val box = detection.boundingBox
-                                                val label = detection.categories.firstOrNull()?.label ?: ""
+                                                val label = detection.label
                                                 val isTrafficLight = label == "traffic light"
                                                 val boxColor = if (isTrafficLight) Color.Yellow else Color.Green
                                                 

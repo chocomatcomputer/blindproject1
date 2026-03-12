@@ -83,8 +83,7 @@ dependencies {
     ksp(libs.hilt.compiler)
 
     // TensorFlow Lite
-    implementation(libs.tensorflow.lite.task.vision)
-    implementation(libs.tensorflow.lite.gpu.delegate.plugin)
+    implementation(libs.tensorflow.lite)
 
     // Maps
     implementation(libs.play.services.maps)

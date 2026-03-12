@@ -51,7 +51,7 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideObjectDetectorHelper(@ApplicationContext context: Context, modelDownloader: ModelDownloader): ObjectDetectorHelper = ObjectDetectorHelper(context, modelDownloader)
+    fun provideObjectDetectorHelper(modelDownloader: ModelDownloader): ObjectDetectorHelper = ObjectDetectorHelper(modelDownloader)
     
     @Provides
     @Singleton

@@ -1,1 +1,1 @@
-Place efficientdet_lite0.tflite here.
+Place yolov8n_int8.tflite here.

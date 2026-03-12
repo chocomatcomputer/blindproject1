@@ -15,16 +15,33 @@ import javax.inject.Singleton
 class ModelDownloader @Inject constructor(
     private val context: Context
 ) {
-    // Official EfficientDet-Lite0 model URL from TensorFlow Hub
-    private val modelUrl = "https://storage.googleapis.com/download.tensorflow.org/models/tflite/task_library/object_detection/android/lite-model_efficientdet_lite0_detection_metadata_1.tflite"
-    val modelFile = File(context.filesDir, "efficientdet_lite0.tflite")
+    // Optional remote URL. Local asset copy is attempted first for stable MVP usage.
+    private val modelUrl = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n_int8.tflite"
+    private val modelAssetName = "yolov8n_int8.tflite"
+    val modelFile = File(context.filesDir, modelAssetName)
 
     suspend fun downloadModelIfNeeded(): Boolean = withContext(Dispatchers.IO) {
-        if (modelFile.exists() && modelFile.length() > 1000000) {
+        if (modelFile.exists() && modelFile.length() > 500000) {
             Log.d("ModelDownloader", "Model already exists. Size: ${modelFile.length()}")
             return@withContext true
         }
 
+        // 1) Prefer local bundled asset for deterministic startup.
+        try {
+            context.assets.open(modelAssetName).use { input ->
+                FileOutputStream(modelFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (modelFile.exists() && modelFile.length() > 500000) {
+                Log.d("ModelDownloader", "Model copied from assets successfully.")
+                return@withContext true
+            }
+        } catch (e: Exception) {
+            Log.w("ModelDownloader", "Asset model not found. Fallback to remote download.", e)
+        }
+
+        // 2) Fallback to remote download.
         Log.d("ModelDownloader", "Downloading model from $modelUrl")
         val client = OkHttpClient()
         val request = Request.Builder().url(modelUrl).build()
