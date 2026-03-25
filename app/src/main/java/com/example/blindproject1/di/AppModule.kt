@@ -7,6 +7,7 @@ import com.example.blindproject1.audio.VoiceCommandManager
 import com.example.blindproject1.haptics.HapticManager
 import com.example.blindproject1.ml.ModelDownloader
 import com.example.blindproject1.ml.ObjectDetectorHelper
+import com.example.blindproject1.network.Esp32GlassesRepository
 import com.example.blindproject1.network.TMapRepository
 import com.example.blindproject1.sensors.LocationHelper
 import com.example.blindproject1.sensors.OrientationManager
@@ -15,11 +16,22 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import javax.inject.Singleton
 
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(): OkHttpClient {
+        return OkHttpClient.Builder()
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(3, TimeUnit.SECONDS)
+            .build()
+    }
 
     @Provides
     @Singleton
@@ -35,7 +47,10 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideVoiceCommandManager(@ApplicationContext context: Context, ttsManager: TTSManager): VoiceCommandManager = VoiceCommandManager(context, ttsManager)
+    fun provideVoiceCommandManager(
+        @ApplicationContext context: Context,
+        ttsManager: TTSManager
+    ): VoiceCommandManager = VoiceCommandManager(context, ttsManager)
 
     @Provides
     @Singleton
@@ -44,16 +59,23 @@ object AppModule {
     @Provides
     @Singleton
     fun provideOrientationManager(@ApplicationContext context: Context): OrientationManager = OrientationManager(context)
-    
+
     @Provides
     @Singleton
     fun provideModelDownloader(@ApplicationContext context: Context): ModelDownloader = ModelDownloader(context)
 
     @Provides
     @Singleton
-    fun provideObjectDetectorHelper(modelDownloader: ModelDownloader): ObjectDetectorHelper = ObjectDetectorHelper(modelDownloader)
-    
+    fun provideObjectDetectorHelper(modelDownloader: ModelDownloader): ObjectDetectorHelper =
+        ObjectDetectorHelper(modelDownloader)
+
     @Provides
     @Singleton
     fun provideTMapRepository(): TMapRepository = TMapRepository()
+
+    @Provides
+    @Singleton
+    fun provideEsp32GlassesRepository(
+        client: OkHttpClient
+    ): Esp32GlassesRepository = Esp32GlassesRepository(client)
 }
