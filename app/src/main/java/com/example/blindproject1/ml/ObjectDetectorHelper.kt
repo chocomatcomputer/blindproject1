@@ -60,14 +60,16 @@ class ObjectDetectorHelper @Inject constructor(
         
         val tflite = interpreter ?: return emptyList()
 
+        var argbBitmap: Bitmap? = null
+        var resizedBitmap: Bitmap? = null
         try {
-            val argbBitmap = if (image.config == Bitmap.Config.ARGB_8888) {
+            argbBitmap = if (image.config == Bitmap.Config.ARGB_8888) {
                 image
             } else {
                 image.copy(Bitmap.Config.ARGB_8888, true)
             }
-            val resized = Bitmap.createScaledBitmap(argbBitmap, inputSize, inputSize, true)
-            val inputBuffer = bitmapToInputBuffer(resized)
+            resizedBitmap = Bitmap.createScaledBitmap(argbBitmap, inputSize, inputSize, true)
+            val inputBuffer = bitmapToInputBuffer(resizedBitmap)
 
             val outputTensor = tflite.getOutputTensor(0)
             val outputShape = outputTensor.shape()
@@ -92,6 +94,13 @@ class ObjectDetectorHelper @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Detection error", e)
             return emptyList()
+        } finally {
+            if (resizedBitmap != null && resizedBitmap !== argbBitmap && !resizedBitmap.isRecycled) {
+                resizedBitmap.recycle()
+            }
+            if (argbBitmap != null && argbBitmap !== image && !argbBitmap.isRecycled) {
+                argbBitmap.recycle()
+            }
         }
     }
 

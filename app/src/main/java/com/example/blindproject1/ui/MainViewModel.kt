@@ -126,6 +126,7 @@ class MainViewModel @Inject constructor(
     private var esp32FrameJob: Job? = null
     private var esp32YawJob: Job? = null
     private var esp32AnalyzeJob: Job? = null
+    private var esp32VisionWatchdogJob: Job? = null
     private var pendingEsp32Frame: Bitmap? = null
     private var routeWaypoints: List<Location> = emptyList()
     private var currentWaypointIndex = 0
@@ -381,6 +382,9 @@ class MainViewModel @Inject constructor(
         esp32FrameJob?.cancel()
         esp32FrameJob = null
 
+        esp32VisionWatchdogJob?.cancel()
+        esp32VisionWatchdogJob = null
+
         esp32AnalyzeJob?.cancel()
         esp32AnalyzeJob = null
         pendingEsp32Frame = null
@@ -397,9 +401,11 @@ class MainViewModel @Inject constructor(
     private fun startEsp32YawLoop(dataUrl: String) {
         esp32YawJob?.cancel()
         esp32YawJob = viewModelScope.launch(Dispatchers.IO) {
+            var failureCount = 0
             while (isActive) {
                 val yaw = esp32GlassesRepository.fetchYaw(dataUrl)
                 if (yaw != null) {
+                    failureCount = 0
                     withContext(Dispatchers.Main) {
                         _rawYaw.value = normalizeDegrees(yaw)
                         _currentHeading.value = ingestRawYaw(yaw)
@@ -407,8 +413,11 @@ class MainViewModel @Inject constructor(
                             updateAudio()
                         }
                     }
+                    delay(60) // 약 16~17Hz polling
+                } else {
+                    failureCount++
+                    delay(if (failureCount >= 5) 500 else 150)
                 }
-                delay(60) // 약 16~17Hz polling
             }
         }
     }
@@ -419,12 +428,38 @@ class MainViewModel @Inject constructor(
         pendingEsp32Frame = null
 
         esp32FrameJob = viewModelScope.launch {
-            esp32GlassesRepository.cameraFrames(cameraUrl).collect { bitmap ->
-                // 프리뷰는 즉시 갱신
-                _selectedImage.value = bitmap
+            var receivedAnyFrame = false
+            esp32VisionWatchdogJob?.cancel()
+            esp32VisionWatchdogJob = launch {
+                delay(4000)
+                if (!receivedAnyFrame && _isEsp32VisionActive.value) {
+                    Log.w("ESP32", "No camera frame received within timeout")
+                    stopEsp32Vision(speak = false)
+                    ttsManager.speak("안경 카메라 연결에 실패했습니다.")
+                }
+            }
 
-                // 탐지는 별도 큐로 순차 처리
-                enqueueEsp32FrameForAnalysis(bitmap)
+            try {
+                esp32GlassesRepository.cameraFrames(cameraUrl).collect { bitmap ->
+                    receivedAnyFrame = true
+                    esp32VisionWatchdogJob?.cancel()
+                    esp32VisionWatchdogJob = null
+
+                    // 프리뷰는 즉시 갱신
+                    _selectedImage.value = bitmap
+
+                    // 탐지는 별도 큐로 순차 처리
+                    enqueueEsp32FrameForAnalysis(bitmap)
+                }
+            } catch (e: Exception) {
+                Log.e("ESP32", "Camera frame loop failed", e)
+            }
+
+            if (!receivedAnyFrame && _isEsp32VisionActive.value) {
+                withContext(Dispatchers.Main) {
+                    stopEsp32Vision(speak = false)
+                    ttsManager.speak("안경 카메라 영상을 받지 못했습니다.")
+                }
             }
         }
     }

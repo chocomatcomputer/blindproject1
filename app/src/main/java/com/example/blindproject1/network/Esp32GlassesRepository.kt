@@ -205,13 +205,17 @@ class Esp32GlassesRepository @Inject constructor(
                         } else {
                             frameBuffer.write(b)
 
+                            if (frameBuffer.size() > MAX_FRAME_BYTES) {
+                                Log.w(TAG, "Discarding oversized MJPEG frame from $streamUrl")
+                                frameBuffer.reset()
+                                collecting = false
+                                previous = -1
+                                continue
+                            }
+
                             if (previous == 0xFF && b == 0xD9) {
                                 val jpegBytes = frameBuffer.toByteArray()
-                                val bitmap = BitmapFactory.decodeByteArray(
-                                    jpegBytes,
-                                    0,
-                                    jpegBytes.size
-                                )
+                                val bitmap = decodeJpegBitmap(jpegBytes)
 
                                 if (bitmap != null) {
                                     emitted = true
@@ -291,12 +295,23 @@ class Esp32GlassesRepository @Inject constructor(
                 }
 
                 val bytes = response.body?.bytes() ?: return null
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bytes.size > MAX_FRAME_BYTES) {
+                    Log.w(TAG, "Discarding oversized JPEG capture from $captureUrl")
+                    return null
+                }
+                decodeJpegBitmap(bytes)
             }
         } catch (e: Exception) {
             Log.e(TAG, "capture error at $captureUrl", e)
             null
         }
+    }
+
+    private fun decodeJpegBitmap(bytes: ByteArray): Bitmap? {
+        val options = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
 
     suspend fun fetchYaw(dataUrl: String): Float? {
@@ -325,5 +340,6 @@ class Esp32GlassesRepository @Inject constructor(
 
     companion object {
         private const val TAG = "Esp32GlassesRepo"
+        private const val MAX_FRAME_BYTES = 512 * 1024
     }
 }
