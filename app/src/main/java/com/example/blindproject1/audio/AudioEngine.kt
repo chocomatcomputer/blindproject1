@@ -8,21 +8,22 @@ import android.os.Process
 import android.util.Log
 import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
-import kotlin.math.sqrt
 
 /**
- * Navigation-optimized binaural engine.
+ * Direction-first audio compass for blind navigation.
  *
- * Goals:
- * - Route sound must come only from the desired heading.
- * - Strong lateralization on ordinary stereo / bone-conduction earphones.
- * - Head-tracked externally by caller via setRouteAzimuth(target - glassesYaw).
+ * Design goal:
+ * - Do NOT aim for subtle "nice" spatialization.
+ * - Aim for unmistakable directional guidance on normal stereo earbuds.
  *
- * This is NOT platform Spatializer-based.
- * It renders stereo binaural cues directly in the app.
+ * Strategy:
+ * - On-target: centered beacon.
+ * - Off to left/right: almost single-ear cue on the correct side.
+ * - Far off / behind: strong "turn this way" cue only on that side.
+ *
+ * Caller must provide routeAzimuth = targetBearing - correctedGlassesYaw.
  */
 class AudioEngine {
 
@@ -34,15 +35,16 @@ class AudioEngine {
         private const val BYTES_PER_SAMPLE = 2
         private const val BLOCK_FRAMES = 256
 
-        // Stronger directional cues than pure tones.
-        private const val ROUTE_FREQ_A = 700.0
-        private const val ROUTE_FREQ_B = 1250.0
-        private const val OBSTACLE_FREQ = 1750.0
+        private const val FRONT_CONE_DEG = 10f
+        private const val SIDE_CONE_DEG = 45f
+        private const val TURN_CONE_DEG = 100f
 
-        // Stronger ITD for lateralization on bone conduction.
-        private const val MAX_ITD_SEC = 0.00063f // ~0.63 ms
+        private const val MAX_ITD_SEC = 0.00065f
+        private const val MASTER_GAIN = 0.90f
 
-        private const val MASTER_GAIN = 0.92f
+        private const val ROUTE_FREQ_A = 720.0
+        private const val ROUTE_FREQ_B = 1280.0
+        private const val OBSTACLE_FREQ = 1700.0
     }
 
     @Volatile
@@ -80,7 +82,7 @@ class AudioEngine {
     private var obstaclePhase = 0.0
     private var routeCounter = 0L
     private var obstacleCounter = 0L
-    private var noiseState = 0x13579BDF.toInt()
+    private var noiseState = 0x1A2B3C4D
 
     private val routeLeftDelay = FractionalDelayLine(96)
     private val routeRightDelay = FractionalDelayLine(96)
@@ -91,9 +93,6 @@ class AudioEngine {
     private val routeRightShadow = OnePoleLowPass()
     private val obstacleLeftShadow = OnePoleLowPass()
     private val obstacleRightShadow = OnePoleLowPass()
-
-    private val rearLeftDarkening = OnePoleLowPass()
-    private val rearRightDarkening = OnePoleLowPass()
 
     @Synchronized
     fun start() {
@@ -119,7 +118,7 @@ class AudioEngine {
             }
             renderLoop(track)
         }.apply {
-            name = "BlindNav-SpatialAudio"
+            name = "BlindNav-AudioCompass"
             priority = Thread.MAX_PRIORITY
             start()
         }
@@ -140,24 +139,20 @@ class AudioEngine {
             audioTrack?.pause()
         } catch (_: Exception) {
         }
-
         try {
             audioTrack?.flush()
         } catch (_: Exception) {
         }
-
         try {
             audioTrack?.stop()
         } catch (_: Exception) {
         }
-
         try {
             audioTrack?.release()
         } catch (_: Exception) {
         }
 
         audioTrack = null
-
         routeActive = false
         obstacleLayerEnabled = false
         obstacleAzimuthDeg = null
@@ -215,41 +210,20 @@ class AudioEngine {
                 if (routeActive) {
                     routeSmoothedAzimuth = smoothAngle(routeSmoothedAzimuth, routeAzimuthDeg, 0.10f)
 
-                    val routeMono = nextRouteSample(routeSmoothedAzimuth, routeDistanceMeters)
-                    val routeStereo = renderBinaural(
-                        mono = routeMono,
-                        azimuthDeg = routeSmoothedAzimuth,
-                        leftDelay = routeLeftDelay,
-                        rightDelay = routeRightDelay,
-                        leftShadow = routeLeftShadow,
-                        rightShadow = routeRightShadow,
-                        sourceGain = 1.0f,
-                        rearDarkening = true
-                    )
+                    val routeMono = nextRouteMono(routeSmoothedAzimuth, routeDistanceMeters)
+                    val routeStereo = renderRouteCompass(routeMono, routeSmoothedAzimuth)
 
                     left += routeStereo.left * normalVolumeScale
                     right += routeStereo.right * normalVolumeScale
                 }
 
-                val obsAz = obstacleAzimuthDeg
-                if (obstacleLayerEnabled && obsAz != null) {
-                    obstacleSmoothedAzimuth = smoothAngle(obstacleSmoothedAzimuth, obsAz, 0.18f)
+                val obstacleAz = obstacleAzimuthDeg
+                if (obstacleLayerEnabled && obstacleAz != null) {
+                    obstacleSmoothedAzimuth = smoothAngle(obstacleSmoothedAzimuth, obstacleAz, 0.20f)
+                    val obstacleMono = nextObstacleMono(obstacleSeverity)
+                    val obstacleStereo = renderObstacleCompass(obstacleMono, obstacleSmoothedAzimuth, obstacleSeverity)
 
-                    val sev = obstacleSeverity.coerceIn(0f, 1f)
-                    val obstacleMono = nextObstacleSample(sev)
-                    val obstacleStereo = renderBinaural(
-                        mono = obstacleMono,
-                        azimuthDeg = obstacleSmoothedAzimuth,
-                        leftDelay = obstacleLeftDelay,
-                        rightDelay = obstacleRightDelay,
-                        leftShadow = obstacleLeftShadow,
-                        rightShadow = obstacleRightShadow,
-                        sourceGain = 1.1f + 0.45f * sev,
-                        rearDarkening = false
-                    )
-
-                    // Duck route a bit when obstacle exists.
-                    val duck = 1f - 0.55f * sev
+                    val duck = 1f - 0.55f * obstacleSeverity
                     left = left * duck + obstacleStereo.left
                     right = right * duck + obstacleStereo.right
                 }
@@ -266,162 +240,223 @@ class AudioEngine {
             }
 
             if (written < 0) {
-                Log.e(TAG, "AudioTrack write returned error: $written")
+                Log.e(TAG, "AudioTrack write error: $written")
                 break
             }
         }
     }
 
     /**
-     * Route cue:
-     * Broadband transient + chirp + noise is much easier to localize than a pure sine tone.
+     * Route cue is intentionally broadband and transient-heavy.
+     * Much easier to lateralize than a pure sine tone.
      */
-    private fun nextRouteSample(routeAzimuth: Float, distanceMeters: Float): Float {
-        val alignment = 1f - (abs(routeAzimuth) / 180f).coerceIn(0f, 1f)
+    private fun nextRouteMono(routeAzimuth: Float, distanceMeters: Float): Float {
+        val absAz = abs(routeAzimuth)
+        val cycleMs = when {
+            absAz <= FRONT_CONE_DEG -> 360f
+            absAz <= SIDE_CONE_DEG -> 260f
+            absAz <= TURN_CONE_DEG -> 180f
+            else -> 120f
+        }
 
-        // Faster pulses when the direction is closer to center.
-        val intervalMs = lerp(420f, 210f, alignment)
-        val pulseMs = 46f
-
-        val cycleSamples = max(1L, (intervalMs * SAMPLE_RATE / 1000f).toLong())
-        val onSamples = max(1L, (pulseMs * SAMPLE_RATE / 1000f).toLong())
-
+        val pulseWidthMs = 34f
+        val cycleSamples = max(1L, (cycleMs * SAMPLE_RATE / 1000f).toLong())
+        val pulseWidthSamples = max(1L, (pulseWidthMs * SAMPLE_RATE / 1000f).toLong())
         val pos = routeCounter % cycleSamples
         routeCounter++
 
-        if (pos >= onSamples) return 0f
+        val pulseOffsets = when {
+            absAz <= FRONT_CONE_DEG -> longArrayOf(
+                0L,
+                (0.080f * SAMPLE_RATE).toLong()
+            )
+            absAz <= SIDE_CONE_DEG -> longArrayOf(0L)
+            absAz <= TURN_CONE_DEG -> longArrayOf(
+                0L,
+                (0.055f * SAMPLE_RATE).toLong()
+            )
+            else -> longArrayOf(
+                0L,
+                (0.040f * SAMPLE_RATE).toLong(),
+                (0.080f * SAMPLE_RATE).toLong()
+            )
+        }
 
-        val env = raisedCosine(pos, onSamples)
-        val progress = pos.toFloat() / onSamples.toFloat()
+        val env = pulseTrainEnvelope(pos, pulseOffsets, pulseWidthSamples)
+        if (env <= 0f) return 0f
 
-        val click = if (pos < 14L) 1f - (pos / 14f) else 0f
-        val chirpA = ROUTE_FREQ_A + 260.0 * progress
-        val chirpB = ROUTE_FREQ_B + 140.0 * progress
+        val click = sharpClickEnvelope(pos, pulseOffsets, 10)
+        val progress = ((pos % pulseWidthSamples).toFloat() / pulseWidthSamples.toFloat()).coerceIn(0f, 1f)
 
-        routePhaseA += 2.0 * PI * chirpA / SAMPLE_RATE
-        routePhaseB += 2.0 * PI * chirpB / SAMPLE_RATE
+        val fA = ROUTE_FREQ_A + 220.0 * progress
+        val fB = ROUTE_FREQ_B + 140.0 * progress
+
+        routePhaseA += 2.0 * PI * fA / SAMPLE_RATE
+        routePhaseB += 2.0 * PI * fB / SAMPLE_RATE
         if (routePhaseA > 2.0 * PI) routePhaseA -= 2.0 * PI
         if (routePhaseB > 2.0 * PI) routePhaseB -= 2.0 * PI
 
         val noise = nextWhiteNoise()
-
         val mono =
-            0.28f * click +
-                    0.32f * sin(routePhaseA).toFloat() +
+            0.26f * click +
+                    0.34f * sin(routePhaseA).toFloat() +
                     0.18f * sin(routePhaseB).toFloat() +
                     0.22f * noise
 
-        val distanceGain = (1f / (1f + 0.07f * distanceMeters)).coerceIn(0.55f, 1f)
-
-        return mono * env * 0.58f * distanceGain
+        val distanceGain = (1f / (1f + 0.08f * distanceMeters)).coerceIn(0.55f, 1f)
+        return mono * env * 0.60f * distanceGain
     }
 
-    /**
-     * Obstacle cue:
-     * More urgent, sharper, slightly noisier.
-     */
-    private fun nextObstacleSample(severity: Float): Float {
+    private fun nextObstacleMono(severity: Float): Float {
         val sev = severity.coerceIn(0.15f, 1f)
+        val cycleMs = lerp(220f, 95f, sev)
+        val pulseWidthMs = lerp(26f, 72f, sev)
 
-        val intervalMs = lerp(240f, 90f, sev)
-        val pulseMs = lerp(28f, 72f, sev)
-
-        val cycleSamples = max(1L, (intervalMs * SAMPLE_RATE / 1000f).toLong())
-        val onSamples = max(1L, (pulseMs * SAMPLE_RATE / 1000f).toLong())
-
+        val cycleSamples = max(1L, (cycleMs * SAMPLE_RATE / 1000f).toLong())
+        val pulseWidthSamples = max(1L, (pulseWidthMs * SAMPLE_RATE / 1000f).toLong())
         val pos = obstacleCounter % cycleSamples
         obstacleCounter++
 
-        if (pos >= onSamples) return 0f
+        val pulseOffsets = longArrayOf(0L)
+        val env = pulseTrainEnvelope(pos, pulseOffsets, pulseWidthSamples)
+        if (env <= 0f) return 0f
 
-        val env = raisedCosine(pos, onSamples)
+        val click = sharpClickEnvelope(pos, pulseOffsets, 8)
         obstaclePhase += 2.0 * PI * OBSTACLE_FREQ / SAMPLE_RATE
         if (obstaclePhase > 2.0 * PI) obstaclePhase -= 2.0 * PI
 
         val tone = sin(obstaclePhase).toFloat()
         val noise = nextWhiteNoise()
-        val click = if (pos < 10L) 1f - (pos / 10f) else 0f
-
         val mono =
             0.22f * click +
                     0.36f * tone +
                     0.42f * noise
 
-        return mono * env * (0.24f + 0.50f * sev)
+        return mono * env * (0.28f + 0.50f * sev)
     }
 
     /**
-     * Strong HRTF-lite renderer.
-     *
-     * 1) Interaural time difference (fractional delay)
-     * 2) Interaural level difference (very strong far-ear suppression)
-     * 3) Far-ear spectral shadowing (low-pass)
-     * 4) Rear darkening
+     * Navigation-optimized route rendering.
+     * - Front: centered beacon
+     * - Side: strong ipsilateral cue
+     * - Behind: "turn this way" ear-only cue, not fake rear localization
      */
-    private fun renderBinaural(
+    private fun renderRouteCompass(mono: Float, azimuthDeg: Float): StereoFrame {
+        val absAz = abs(azimuthDeg)
+
+        return when {
+            absAz <= FRONT_CONE_DEG -> {
+                // Very small pan near center, mostly centered.
+                val pan = (azimuthDeg / FRONT_CONE_DEG).coerceIn(-1f, 1f) * 0.25f
+                val left = mono * (1f - pan).coerceIn(0f, 1.2f)
+                val right = mono * (1f + pan).coerceIn(0f, 1.2f)
+                StereoFrame(left = left * 0.92f, right = right * 0.92f)
+            }
+
+            absAz <= SIDE_CONE_DEG -> {
+                // Front-left / front-right: near ear dominant, far ear faint.
+                renderLateralized(
+                    mono = mono,
+                    azimuthDeg = azimuthDeg,
+                    nearGain = 1.0f,
+                    farGain = 0.10f,
+                    itdSec = 0.00038f,
+                    farEarAlpha = 0.08f,
+                    hardOneEar = false,
+                    isObstacle = false
+                )
+            }
+
+            absAz <= TURN_CONE_DEG -> {
+                // Strong turn cue: essentially one-ear guidance.
+                renderLateralized(
+                    mono = mono,
+                    azimuthDeg = azimuthDeg,
+                    nearGain = 1.0f,
+                    farGain = 0.015f,
+                    itdSec = 0.00065f,
+                    farEarAlpha = 0.05f,
+                    hardOneEar = true,
+                    isObstacle = false
+                )
+            }
+
+            else -> {
+                // Too far behind to trust "rear" localization on generic earbuds.
+                // Turn cue only on the side you should rotate toward.
+                renderTurnCueOnly(
+                    mono = mono,
+                    azimuthDeg = azimuthDeg
+                )
+            }
+        }
+    }
+
+    private fun renderObstacleCompass(mono: Float, azimuthDeg: Float, severity: Float): StereoFrame {
+        return renderLateralized(
+            mono = mono,
+            azimuthDeg = azimuthDeg,
+            nearGain = 1.0f + 0.25f * severity,
+            farGain = 0.06f,
+            itdSec = 0.00050f,
+            farEarAlpha = 0.06f,
+            hardOneEar = true,
+            isObstacle = true
+        )
+    }
+
+    private fun renderTurnCueOnly(mono: Float, azimuthDeg: Float): StereoFrame {
+        return if (azimuthDeg < 0f) {
+            StereoFrame(left = mono * 1.0f, right = 0f)
+        } else {
+            StereoFrame(left = 0f, right = mono * 1.0f)
+        }
+    }
+
+    private fun renderLateralized(
         mono: Float,
         azimuthDeg: Float,
-        leftDelay: FractionalDelayLine,
-        rightDelay: FractionalDelayLine,
-        leftShadow: OnePoleLowPass,
-        rightShadow: OnePoleLowPass,
-        sourceGain: Float,
-        rearDarkening: Boolean
+        nearGain: Float,
+        farGain: Float,
+        itdSec: Float,
+        farEarAlpha: Float,
+        hardOneEar: Boolean,
+        isObstacle: Boolean
     ): StereoFrame {
-        val azimuthRad = Math.toRadians(azimuthDeg.toDouble())
-        val pan = sin(azimuthRad).toFloat().coerceIn(-1f, 1f)
-        val frontness = cos(azimuthRad).toFloat()
-        val absPan = abs(pan)
+        val leftDelay = if (isObstacle) obstacleLeftDelay else routeLeftDelay
+        val rightDelay = if (isObstacle) obstacleRightDelay else routeRightDelay
+        val leftShadow = if (isObstacle) obstacleLeftShadow else routeLeftShadow
+        val rightShadow = if (isObstacle) obstacleRightShadow else routeRightShadow
 
-        val maxDelaySamples = MAX_ITD_SEC * SAMPLE_RATE
-        val leftDelaySamples = if (pan > 0f) maxDelaySamples * absPan else 0f
-        val rightDelaySamples = if (pan < 0f) maxDelaySamples * absPan else 0f
+        val delaySamples = itdSec * SAMPLE_RATE
 
-        var left = leftDelay.process(mono, leftDelaySamples)
-        var right = rightDelay.process(mono, rightDelaySamples)
-
-        // Strong ILD for bone conduction / ordinary stereo.
-        // Near ear stays strong, far ear is heavily attenuated at large azimuth.
-        val farEarGain = lerp(1f, 0.06f, absPan)
-        val nearEarGain = 1.0f
-
-        // Extra low-pass on the far ear.
-        val farEarAlpha = lerp(0.90f, 0.06f, absPan)
-
-        when {
-            pan > 0f -> {
-                left = leftShadow.process(left, farEarAlpha) * farEarGain
-                right = rightShadow.bypass(right) * nearEarGain
+        return if (azimuthDeg < 0f) {
+            // Source is on the left
+            val nearLeft = leftDelay.process(mono, 0f) * nearGain
+            val farRightRaw = rightDelay.process(mono, delaySamples)
+            val farRight = if (hardOneEar) {
+                farRightRaw * farGain
+            } else {
+                rightShadow.process(farRightRaw, farEarAlpha) * farGain
             }
-            pan < 0f -> {
-                left = leftShadow.bypass(left) * nearEarGain
-                right = rightShadow.process(right, farEarAlpha) * farEarGain
-            }
-            else -> {
-                left = leftShadow.bypass(left)
-                right = rightShadow.bypass(right)
-            }
-        }
-
-        // Equal-power base panning, then far-ear suppression pushes the image outward.
-        val baseLeft = sqrt(0.5f * (1f - pan))
-        val baseRight = sqrt(0.5f * (1f + pan))
-
-        var outLeft = left * baseLeft
-        var outRight = right * baseRight
-
-        if (rearDarkening && frontness < 0f) {
-            outLeft = rearLeftDarkening.process(outLeft, 0.14f) * 0.84f
-            outRight = rearRightDarkening.process(outRight, 0.14f) * 0.84f
+            StereoFrame(
+                left = nearLeft,
+                right = farRight
+            )
         } else {
-            outLeft = rearLeftDarkening.bypass(outLeft)
-            outRight = rearRightDarkening.bypass(outRight)
+            // Source is on the right
+            val nearRight = rightDelay.process(mono, 0f) * nearGain
+            val farLeftRaw = leftDelay.process(mono, delaySamples)
+            val farLeft = if (hardOneEar) {
+                farLeftRaw * farGain
+            } else {
+                leftShadow.process(farLeftRaw, farEarAlpha) * farGain
+            }
+            StereoFrame(
+                left = farLeft,
+                right = nearRight
+            )
         }
-
-        return StereoFrame(
-            left = outLeft * sourceGain,
-            right = outRight * sourceGain
-        )
     }
 
     private fun createAudioTrack(): AudioTrack? {
@@ -436,17 +471,14 @@ class AudioEngine {
             return null
         }
 
-        val bufferSize = max(
-            minBufferSize,
-            BLOCK_FRAMES * CHANNELS * BYTES_PER_SAMPLE * 8
-        )
+        val bufferSize = max(minBufferSize, BLOCK_FRAMES * CHANNELS * BYTES_PER_SAMPLE * 8)
 
-        val attributes = AudioAttributes.Builder()
+        val audioAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
-        val format = AudioFormat.Builder()
+        val audioFormat = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .setSampleRate(SAMPLE_RATE)
             .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
@@ -454,8 +486,8 @@ class AudioEngine {
 
         return try {
             val builder = AudioTrack.Builder()
-                .setAudioAttributes(attributes)
-                .setAudioFormat(format)
+                .setAudioAttributes(audioAttributes)
+                .setAudioFormat(audioFormat)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setBufferSizeInBytes(bufferSize)
 
@@ -470,6 +502,37 @@ class AudioEngine {
         }
     }
 
+    private fun pulseTrainEnvelope(
+        posInCycle: Long,
+        pulseStarts: LongArray,
+        pulseWidthSamples: Long
+    ): Float {
+        var env = 0f
+        for (start in pulseStarts) {
+            val local = posInCycle - start
+            if (local in 0 until pulseWidthSamples) {
+                env = max(env, raisedCosine(local, pulseWidthSamples))
+            }
+        }
+        return env
+    }
+
+    private fun sharpClickEnvelope(
+        posInCycle: Long,
+        pulseStarts: LongArray,
+        clickSamples: Int
+    ): Float {
+        var env = 0f
+        for (start in pulseStarts) {
+            val local = posInCycle - start
+            if (local in 0 until clickSamples.toLong()) {
+                val x = 1f - (local.toFloat() / clickSamples.toFloat())
+                env = max(env, x)
+            }
+        }
+        return env
+    }
+
     private fun smoothAngle(current: Float, target: Float, alpha: Float): Float {
         val delta = wrap180(target - current)
         return wrap180(current + delta * alpha)
@@ -478,7 +541,7 @@ class AudioEngine {
     private fun raisedCosine(pos: Long, total: Long): Float {
         if (total <= 1L) return 1f
         val x = pos.toDouble() / (total - 1).toDouble()
-        return (0.5 - 0.5 * cos(2.0 * PI * x)).toFloat()
+        return (0.5 - 0.5 * kotlin.math.cos(2.0 * PI * x)).toFloat()
     }
 
     private fun nextWhiteNoise(): Float {
@@ -502,7 +565,7 @@ class AudioEngine {
     }
 
     private fun softClip(x: Float): Float {
-        return x / (1f + 0.30f * abs(x))
+        return x / (1f + 0.28f * abs(x))
     }
 
     private fun floatToPcm16(x: Float): Short {
