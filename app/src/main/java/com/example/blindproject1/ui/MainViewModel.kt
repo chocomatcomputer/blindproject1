@@ -401,11 +401,9 @@ class MainViewModel @Inject constructor(
     private fun startEsp32YawLoop(dataUrl: String) {
         esp32YawJob?.cancel()
         esp32YawJob = viewModelScope.launch(Dispatchers.IO) {
-            var failureCount = 0
             while (isActive) {
                 val yaw = esp32GlassesRepository.fetchYaw(dataUrl)
                 if (yaw != null) {
-                    failureCount = 0
                     withContext(Dispatchers.Main) {
                         _rawYaw.value = normalizeDegrees(yaw)
                         _currentHeading.value = ingestRawYaw(yaw)
@@ -413,11 +411,8 @@ class MainViewModel @Inject constructor(
                             updateAudio()
                         }
                     }
-                    delay(60) // 약 16~17Hz polling
-                } else {
-                    failureCount++
-                    delay(if (failureCount >= 5) 500 else 150)
                 }
+                delay(50)
             }
         }
     }

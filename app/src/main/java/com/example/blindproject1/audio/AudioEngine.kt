@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Build
+import android.os.Process
 import android.util.Log
 import kotlin.math.PI
 import kotlin.math.abs
@@ -13,12 +14,15 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * 더 강하게 방향감을 주는 binaural cue engine.
+ * Navigation-optimized binaural engine.
  *
- * 핵심:
- * - route cue는 targetBearing - glassesYaw 로 계산된 azimuth에서 항상 들린다.
- * - 더 이상 "폰을 돌려야" 소리가 맞는 구조가 아니다.
- * - 방향감 강화를 위해 ITD / ILD / far-ear low-pass 를 과장해서 넣었다.
+ * Goals:
+ * - Route sound must come only from the desired heading.
+ * - Strong lateralization on ordinary stereo / bone-conduction earphones.
+ * - Head-tracked externally by caller via setRouteAzimuth(target - glassesYaw).
+ *
+ * This is NOT platform Spatializer-based.
+ * It renders stereo binaural cues directly in the app.
  */
 class AudioEngine {
 
@@ -26,18 +30,19 @@ class AudioEngine {
         private const val TAG = "AudioEngine"
 
         private const val SAMPLE_RATE = 48000
-        private const val CHANNEL_COUNT = 2
+        private const val CHANNELS = 2
         private const val BYTES_PER_SAMPLE = 2
         private const val BLOCK_FRAMES = 256
 
-        private const val ROUTE_FREQ_A = 760.0
-        private const val ROUTE_FREQ_B = 1180.0
-        private const val OBSTACLE_FREQ = 1650.0
+        // Stronger directional cues than pure tones.
+        private const val ROUTE_FREQ_A = 700.0
+        private const val ROUTE_FREQ_B = 1250.0
+        private const val OBSTACLE_FREQ = 1750.0
 
-        // 방향감 강화를 위해 약간 과장한 ITD
-        private const val MAX_ITD_SEC = 0.00055f
+        // Stronger ITD for lateralization on bone conduction.
+        private const val MAX_ITD_SEC = 0.00063f // ~0.63 ms
 
-        private const val MASTER_GAIN = 0.9f
+        private const val MASTER_GAIN = 0.92f
     }
 
     @Volatile
@@ -75,7 +80,7 @@ class AudioEngine {
     private var obstaclePhase = 0.0
     private var routeCounter = 0L
     private var obstacleCounter = 0L
-    private var noiseState = 0x2468ACE.toInt()
+    private var noiseState = 0x13579BDF.toInt()
 
     private val routeLeftDelay = FractionalDelayLine(96)
     private val routeRightDelay = FractionalDelayLine(96)
@@ -86,6 +91,9 @@ class AudioEngine {
     private val routeRightShadow = OnePoleLowPass()
     private val obstacleLeftShadow = OnePoleLowPass()
     private val obstacleRightShadow = OnePoleLowPass()
+
+    private val rearLeftDarkening = OnePoleLowPass()
+    private val rearRightDarkening = OnePoleLowPass()
 
     @Synchronized
     fun start() {
@@ -105,6 +113,10 @@ class AudioEngine {
 
         running = true
         renderThread = Thread {
+            try {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            } catch (_: Exception) {
+            }
             renderLoop(track)
         }.apply {
             name = "BlindNav-SpatialAudio"
@@ -146,8 +158,8 @@ class AudioEngine {
 
         audioTrack = null
 
-        obstacleLayerEnabled = false
         routeActive = false
+        obstacleLayerEnabled = false
         obstacleAzimuthDeg = null
         obstacleSeverity = 0f
         normalVolumeScale = 1f
@@ -193,7 +205,7 @@ class AudioEngine {
     }
 
     private fun renderLoop(track: AudioTrack) {
-        val interleaved = ShortArray(BLOCK_FRAMES * CHANNEL_COUNT)
+        val interleaved = ShortArray(BLOCK_FRAMES * CHANNELS)
 
         while (running) {
             for (i in 0 until BLOCK_FRAMES) {
@@ -201,40 +213,42 @@ class AudioEngine {
                 var right = 0f
 
                 if (routeActive) {
-                    routeSmoothedAzimuth = smoothAngle(routeSmoothedAzimuth, routeAzimuthDeg, 0.12f)
+                    routeSmoothedAzimuth = smoothAngle(routeSmoothedAzimuth, routeAzimuthDeg, 0.10f)
 
                     val routeMono = nextRouteSample(routeSmoothedAzimuth, routeDistanceMeters)
-                    val routeStereo = renderSource(
+                    val routeStereo = renderBinaural(
                         mono = routeMono,
                         azimuthDeg = routeSmoothedAzimuth,
                         leftDelay = routeLeftDelay,
                         rightDelay = routeRightDelay,
                         leftShadow = routeLeftShadow,
                         rightShadow = routeRightShadow,
-                        sourceGain = 1f
+                        sourceGain = 1.0f,
+                        rearDarkening = true
                     )
 
                     left += routeStereo.left * normalVolumeScale
                     right += routeStereo.right * normalVolumeScale
                 }
 
-                val obstacleAz = obstacleAzimuthDeg
-                if (obstacleLayerEnabled && obstacleAz != null) {
-                    obstacleSmoothedAzimuth = smoothAngle(obstacleSmoothedAzimuth, obstacleAz, 0.20f)
+                val obsAz = obstacleAzimuthDeg
+                if (obstacleLayerEnabled && obsAz != null) {
+                    obstacleSmoothedAzimuth = smoothAngle(obstacleSmoothedAzimuth, obsAz, 0.18f)
 
                     val sev = obstacleSeverity.coerceIn(0f, 1f)
                     val obstacleMono = nextObstacleSample(sev)
-
-                    val obstacleStereo = renderSource(
+                    val obstacleStereo = renderBinaural(
                         mono = obstacleMono,
                         azimuthDeg = obstacleSmoothedAzimuth,
                         leftDelay = obstacleLeftDelay,
                         rightDelay = obstacleRightDelay,
                         leftShadow = obstacleLeftShadow,
                         rightShadow = obstacleRightShadow,
-                        sourceGain = 1.15f + 0.35f * sev
+                        sourceGain = 1.1f + 0.45f * sev,
+                        rearDarkening = false
                     )
 
+                    // Duck route a bit when obstacle exists.
                     val duck = 1f - 0.55f * sev
                     left = left * duck + obstacleStereo.left
                     right = right * duck + obstacleStereo.right
@@ -252,21 +266,25 @@ class AudioEngine {
             }
 
             if (written < 0) {
-                Log.e(TAG, "AudioTrack write error: $written")
+                Log.e(TAG, "AudioTrack write returned error: $written")
                 break
             }
         }
     }
 
+    /**
+     * Route cue:
+     * Broadband transient + chirp + noise is much easier to localize than a pure sine tone.
+     */
     private fun nextRouteSample(routeAzimuth: Float, distanceMeters: Float): Float {
-        val absAz = abs(routeAzimuth)
-        val alignment = 1f - (absAz / 180f).coerceIn(0f, 1f)
+        val alignment = 1f - (abs(routeAzimuth) / 180f).coerceIn(0f, 1f)
 
-        val intervalMs = lerp(360f, 220f, alignment)
-        val beepMs = 52f
+        // Faster pulses when the direction is closer to center.
+        val intervalMs = lerp(420f, 210f, alignment)
+        val pulseMs = 46f
 
         val cycleSamples = max(1L, (intervalMs * SAMPLE_RATE / 1000f).toLong())
-        val onSamples = max(1L, (beepMs * SAMPLE_RATE / 1000f).toLong())
+        val onSamples = max(1L, (pulseMs * SAMPLE_RATE / 1000f).toLong())
 
         val pos = routeCounter % cycleSamples
         routeCounter++
@@ -274,33 +292,42 @@ class AudioEngine {
         if (pos >= onSamples) return 0f
 
         val env = raisedCosine(pos, onSamples)
-        val chirpProgress = pos.toFloat() / onSamples.toFloat()
-        val freqA = ROUTE_FREQ_A + 220.0 * chirpProgress
-        val freqB = ROUTE_FREQ_B + 120.0 * chirpProgress
+        val progress = pos.toFloat() / onSamples.toFloat()
 
-        routePhaseA += 2.0 * PI * freqA / SAMPLE_RATE
-        routePhaseB += 2.0 * PI * freqB / SAMPLE_RATE
+        val click = if (pos < 14L) 1f - (pos / 14f) else 0f
+        val chirpA = ROUTE_FREQ_A + 260.0 * progress
+        val chirpB = ROUTE_FREQ_B + 140.0 * progress
+
+        routePhaseA += 2.0 * PI * chirpA / SAMPLE_RATE
+        routePhaseB += 2.0 * PI * chirpB / SAMPLE_RATE
         if (routePhaseA > 2.0 * PI) routePhaseA -= 2.0 * PI
         if (routePhaseB > 2.0 * PI) routePhaseB -= 2.0 * PI
 
-        val click = if (pos < 16) (1f - pos / 16f) else 0f
-        val tone =
-            0.55f * sin(routePhaseA).toFloat() +
-                    0.25f * sin(routePhaseB).toFloat() +
-                    0.20f * click
+        val noise = nextWhiteNoise()
 
-        val distanceGain = (1f / (1f + 0.08f * distanceMeters)).coerceIn(0.55f, 1f)
-        return tone * env * 0.36f * distanceGain
+        val mono =
+            0.28f * click +
+                    0.32f * sin(routePhaseA).toFloat() +
+                    0.18f * sin(routePhaseB).toFloat() +
+                    0.22f * noise
+
+        val distanceGain = (1f / (1f + 0.07f * distanceMeters)).coerceIn(0.55f, 1f)
+
+        return mono * env * 0.58f * distanceGain
     }
 
+    /**
+     * Obstacle cue:
+     * More urgent, sharper, slightly noisier.
+     */
     private fun nextObstacleSample(severity: Float): Float {
         val sev = severity.coerceIn(0.15f, 1f)
 
-        val intervalMs = lerp(240f, 100f, sev)
-        val burstMs = lerp(32f, 78f, sev)
+        val intervalMs = lerp(240f, 90f, sev)
+        val pulseMs = lerp(28f, 72f, sev)
 
         val cycleSamples = max(1L, (intervalMs * SAMPLE_RATE / 1000f).toLong())
-        val onSamples = max(1L, (burstMs * SAMPLE_RATE / 1000f).toLong())
+        val onSamples = max(1L, (pulseMs * SAMPLE_RATE / 1000f).toLong())
 
         val pos = obstacleCounter % cycleSamples
         obstacleCounter++
@@ -313,47 +340,61 @@ class AudioEngine {
 
         val tone = sin(obstaclePhase).toFloat()
         val noise = nextWhiteNoise()
-        val attack = if (pos < 10) 1f else 0f
+        val click = if (pos < 10L) 1f - (pos / 10f) else 0f
 
-        val mono = 0.50f * tone + 0.35f * noise + 0.15f * attack
-        return mono * env * (0.22f + 0.42f * sev)
+        val mono =
+            0.22f * click +
+                    0.36f * tone +
+                    0.42f * noise
+
+        return mono * env * (0.24f + 0.50f * sev)
     }
 
-    private fun renderSource(
+    /**
+     * Strong HRTF-lite renderer.
+     *
+     * 1) Interaural time difference (fractional delay)
+     * 2) Interaural level difference (very strong far-ear suppression)
+     * 3) Far-ear spectral shadowing (low-pass)
+     * 4) Rear darkening
+     */
+    private fun renderBinaural(
         mono: Float,
         azimuthDeg: Float,
         leftDelay: FractionalDelayLine,
         rightDelay: FractionalDelayLine,
         leftShadow: OnePoleLowPass,
         rightShadow: OnePoleLowPass,
-        sourceGain: Float
+        sourceGain: Float,
+        rearDarkening: Boolean
     ): StereoFrame {
-        val azRad = Math.toRadians(azimuthDeg.toDouble())
-        val pan = sin(azRad).toFloat().coerceIn(-1f, 1f)
-        val frontness = cos(azRad).toFloat()
-
-        val baseLeft = sqrt(0.5f * (1f - pan))
-        val baseRight = sqrt(0.5f * (1f + pan))
-
+        val azimuthRad = Math.toRadians(azimuthDeg.toDouble())
+        val pan = sin(azimuthRad).toFloat().coerceIn(-1f, 1f)
+        val frontness = cos(azimuthRad).toFloat()
         val absPan = abs(pan)
-        val maxItdSamples = MAX_ITD_SEC * SAMPLE_RATE
-        val leftDelaySamples = if (pan > 0f) maxItdSamples * absPan else 0f
-        val rightDelaySamples = if (pan < 0f) maxItdSamples * absPan else 0f
+
+        val maxDelaySamples = MAX_ITD_SEC * SAMPLE_RATE
+        val leftDelaySamples = if (pan > 0f) maxDelaySamples * absPan else 0f
+        val rightDelaySamples = if (pan < 0f) maxDelaySamples * absPan else 0f
 
         var left = leftDelay.process(mono, leftDelaySamples)
         var right = rightDelay.process(mono, rightDelaySamples)
 
-        // 더 강한 head shadow
-        val farEarGain = 1f - 0.65f * absPan  // full side일 때 far ear 35%
-        val farEarAlpha = 0.24f - 0.18f * absPan // full side일 때 더 강한 low-pass
+        // Strong ILD for bone conduction / ordinary stereo.
+        // Near ear stays strong, far ear is heavily attenuated at large azimuth.
+        val farEarGain = lerp(1f, 0.06f, absPan)
+        val nearEarGain = 1.0f
+
+        // Extra low-pass on the far ear.
+        val farEarAlpha = lerp(0.90f, 0.06f, absPan)
 
         when {
             pan > 0f -> {
                 left = leftShadow.process(left, farEarAlpha) * farEarGain
-                right = rightShadow.bypass(right)
+                right = rightShadow.bypass(right) * nearEarGain
             }
             pan < 0f -> {
-                left = leftShadow.bypass(left)
+                left = leftShadow.bypass(left) * nearEarGain
                 right = rightShadow.process(right, farEarAlpha) * farEarGain
             }
             else -> {
@@ -362,12 +403,24 @@ class AudioEngine {
             }
         }
 
-        // 뒤쪽은 약간 더 작고 어둡게
-        val backGain = if (frontness >= 0f) 1f else 0.82f
+        // Equal-power base panning, then far-ear suppression pushes the image outward.
+        val baseLeft = sqrt(0.5f * (1f - pan))
+        val baseRight = sqrt(0.5f * (1f + pan))
+
+        var outLeft = left * baseLeft
+        var outRight = right * baseRight
+
+        if (rearDarkening && frontness < 0f) {
+            outLeft = rearLeftDarkening.process(outLeft, 0.14f) * 0.84f
+            outRight = rearRightDarkening.process(outRight, 0.14f) * 0.84f
+        } else {
+            outLeft = rearLeftDarkening.bypass(outLeft)
+            outRight = rearRightDarkening.bypass(outRight)
+        }
 
         return StereoFrame(
-            left = left * baseLeft * sourceGain * backGain,
-            right = right * baseRight * sourceGain * backGain
+            left = outLeft * sourceGain,
+            right = outRight * sourceGain
         )
     }
 
@@ -383,7 +436,10 @@ class AudioEngine {
             return null
         }
 
-        val bufferSize = max(minBufferSize, BLOCK_FRAMES * CHANNEL_COUNT * BYTES_PER_SAMPLE * 8)
+        val bufferSize = max(
+            minBufferSize,
+            BLOCK_FRAMES * CHANNELS * BYTES_PER_SAMPLE * 8
+        )
 
         val attributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
@@ -409,7 +465,7 @@ class AudioEngine {
 
             builder.build()
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to create AudioTrack", e)
+            Log.e(TAG, "Error creating AudioTrack", e)
             null
         }
     }
@@ -446,7 +502,7 @@ class AudioEngine {
     }
 
     private fun softClip(x: Float): Float {
-        return x / (1f + 0.35f * abs(x))
+        return x / (1f + 0.30f * abs(x))
     }
 
     private fun floatToPcm16(x: Float): Short {
@@ -488,7 +544,7 @@ class AudioEngine {
         private var y = 0f
 
         fun process(input: Float, alpha: Float): Float {
-            val a = alpha.coerceIn(0.04f, 1f)
+            val a = alpha.coerceIn(0.03f, 1f)
             y += a * (input - y)
             return y
         }
