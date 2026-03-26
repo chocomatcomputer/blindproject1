@@ -6,10 +6,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 
-/**
- * Manages haptic feedback for navigation cues.
- * Provides distinct vibration patterns for normal guidance and danger alerts.
- */
 class HapticManager(private val context: Context) {
 
     private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -20,9 +16,6 @@ class HapticManager(private val context: Context) {
         context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
-    /**
-     * Triggers a short, sharp vibration to indicate a normal event (e.g., tick or update).
-     */
     fun triggerNormalFeedback() {
         if (vibrator?.hasVibrator() == true) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -35,9 +28,6 @@ class HapticManager(private val context: Context) {
         }
     }
 
-    /**
-     * Triggers a strong, patterned vibration to indicate danger or an obstacle.
-     */
     fun triggerDangerFeedback() {
         if (vibrator?.hasVibrator() == true) {
             // Pattern: Wait 0ms, Vibrate 500ms, Sleep 100ms, Vibrate 500ms

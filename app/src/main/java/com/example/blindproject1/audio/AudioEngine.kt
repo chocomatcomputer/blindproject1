@@ -11,21 +11,7 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.sin
 
-/**
- * Route-exclusive auditory compass.
- *
- * Goal:
- * - Blind user should never be confused about direction.
- * - If aligned with target: centered in both ears.
- * - If target is left/right: sound comes only from that side.
- * - If target is far off / behind: faster and more urgent pulses from that side only.
- *
- * This intentionally does NOT try to make subtle "natural" HRTF space.
- * It prioritizes directional certainty over realism.
- *
- * Caller should provide:
- * routeAzimuth = targetBearing - correctedGlassesYaw
- */
+
 class AudioEngine {
 
     companion object {
@@ -154,10 +140,6 @@ class AudioEngine {
         routeDistanceMeters = distanceMeters.coerceAtLeast(0.5f)
     }
 
-    /**
-     * Route-only mode에서는 obstacle spatial audio를 사용하지 않음.
-     * 기존 ViewModel 호환을 위해 no-op으로 유지.
-     */
     fun setObstacleCue(deg: Float?, severity: Float = 0f) {
         // no-op
     }
@@ -174,9 +156,6 @@ class AudioEngine {
         // no-op
     }
 
-    /**
-     * Route cue는 항상 명확해야 하므로 과도한 ducking을 막는다.
-     */
     fun setNormalVolumeScale(scale: Float) {
         normalVolumeScale = scale.coerceIn(0.90f, 1.0f)
     }

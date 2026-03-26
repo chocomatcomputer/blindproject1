@@ -9,7 +9,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-// 산뜻하고 신뢰감을 주는 블루 계열 컬러 팔레트
 val PrimaryBlue = Color(0xFF0056D2)
 val SecondaryBlue = Color(0xFF4285F4)
 val LightBlue = Color(0xFFE8F0FE)
@@ -31,7 +30,6 @@ val TextSecondary = Color(0xFF5F6368)
 val Black = Color(0xFF000000)
 val White = Color(0xFFFFFFFF)
 
-// 공모전용: 밝고 깔끔한 Light Theme
 private val LightColorScheme = lightColorScheme(
     primary = PrimaryBlue,
     secondary = SecondaryBlue,
@@ -47,7 +45,6 @@ private val LightColorScheme = lightColorScheme(
     onError = White
 )
 
-// 시각장애인용 고대비(Dark) 테마
 private val DarkHighContrastColorScheme = darkColorScheme(
     primary = SecondaryBlue,
     secondary = AccentOrange,
@@ -62,12 +59,12 @@ private val DarkHighContrastColorScheme = darkColorScheme(
     onError = White
 )
 
-val LocalThemeMode = staticCompositionLocalOf<Boolean> { false } // false for Light, true for Dark
+val LocalThemeMode = staticCompositionLocalOf<Boolean> { false }
 
 @Composable
 fun BlindProject1Theme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    isHighContrastMode: Boolean = false, // App settings override
+    isHighContrastMode: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val useDark = isHighContrastMode || darkTheme

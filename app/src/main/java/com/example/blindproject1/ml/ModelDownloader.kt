@@ -15,7 +15,6 @@ import javax.inject.Singleton
 class ModelDownloader @Inject constructor(
     private val context: Context
 ) {
-    // Optional remote URL. Local asset copy is attempted first for stable MVP usage.
     private val modelUrl = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n_int8.tflite"
     private val modelAssetName = "yolov8n_int8.tflite"
     val modelFile = File(context.filesDir, modelAssetName)

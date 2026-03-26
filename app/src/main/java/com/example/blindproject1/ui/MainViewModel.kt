@@ -52,7 +52,7 @@ import kotlin.math.sin
 class MainViewModel @Inject constructor(
     private val audioEngine: AudioEngine,
     private val hapticManager: HapticManager,
-    private val orientationManager: OrientationManager, // 더 이상 경로 heading에는 사용하지 않음
+    private val orientationManager: OrientationManager,
     private val objectDetectorHelper: ObjectDetectorHelper,
     private val ttsManager: TTSManager,
     private val voiceCommandManager: VoiceCommandManager,
@@ -183,10 +183,6 @@ class MainViewModel @Inject constructor(
         _esp32YawDataUrl.value = url.trim()
     }
 
-    /**
-     * 이제 monitoring은 "안경 yaw를 항상 반영"하는 역할이다.
-     * 폰 센서 heading은 더 이상 경로 오디오에 사용하지 않는다.
-     */
     fun startMonitoring() {
         audioEngine.start()
         audioEngine.setRouteActive(_isNavigating.value && !isWaitingAtCrosswalk)
@@ -356,10 +352,6 @@ class MainViewModel @Inject constructor(
         ttsManager.speak("안내를 중지합니다.")
     }
 
-    /**
-     * AI 렌즈 버튼은 이제 '카메라 프레임/탐지'만 켜고 끈다.
-     * yaw는 startMonitoring() / startRoutingToDestination()에서 항상 유지된다.
-     */
     fun startEsp32Vision() {
         if (_isEsp32VisionActive.value) return
 
@@ -650,11 +642,6 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    /**
-     * 핵심:
-     * route 방향 = targetBearing - glassesYaw(보정 후)
-     * 더 이상 폰 방향은 전혀 사용하지 않는다.
-     */
     fun updateTargetBearing(bearing: Float) {
         _targetBearing.value = normalizeDegrees(bearing)
         if (!isWaitingAtCrosswalk) {

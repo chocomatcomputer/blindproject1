@@ -1,8 +1,5 @@
 package com.example.blindproject1.ml
 
-/**
- * Detection and warning thresholds for obstacle guidance.
- */
 data class DetectionPolicy(
     val importantLabels: Set<String> = setOf(
         "person",

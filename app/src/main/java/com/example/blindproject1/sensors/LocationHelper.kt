@@ -19,9 +19,6 @@ class LocationHelper @Inject constructor(
     private val fusedLocationClient: FusedLocationProviderClient =
         LocationServices.getFusedLocationProviderClient(context)
 
-    /**
-     * Emits the current location. Requires ACCESS_FINE_LOCATION permission to be granted beforehand.
-     */
     @SuppressLint("MissingPermission")
     fun getLocationFlow(): Flow<Location> = callbackFlow {
         val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2000L)

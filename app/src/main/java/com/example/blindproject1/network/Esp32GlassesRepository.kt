@@ -22,12 +22,6 @@ import javax.inject.Singleton
 class Esp32GlassesRepository @Inject constructor(
     private val client: OkHttpClient
 ) {
-
-    /**
-     * Robust camera frame source:
-     * 1) Try raw MJPEG candidates
-     * 2) If none yield a frame quickly, fallback to repeated /capture JPEG polling
-     */
     fun cameraFrames(cameraUrl: String): Flow<Bitmap> = flow {
         val streamCandidates = buildStreamCandidates(cameraUrl)
         val captureCandidates = buildCaptureCandidates(cameraUrl)
@@ -137,9 +131,6 @@ class Esp32GlassesRepository @Inject constructor(
         return list
     }
 
-    /**
-     * Returns true if at least one frame was emitted.
-     */
     private suspend fun openMjpegStream(
         streamUrl: String,
         firstFrameTimeoutMs: Long,
@@ -242,10 +233,6 @@ class Esp32GlassesRepository @Inject constructor(
         return emitted
     }
 
-    /**
-     * Returns true if at least one JPEG frame was emitted.
-     * This is a fallback when MJPEG is unavailable or HTML page is returned instead.
-     */
     private suspend fun pollJpegFrames(
         captureUrl: String,
         emitFrame: suspend (Bitmap) -> Unit

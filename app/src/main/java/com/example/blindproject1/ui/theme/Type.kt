@@ -8,8 +8,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.Font
 import com.example.blindproject1.R
 
-// Using default sans-serif but styled softer for a modern look
-// Note: In a real app you'd add a soft font like Pretendard or Noto Sans KR to res/font
 val AppFontFamily = FontFamily.SansSerif
 
 val Typography = Typography(

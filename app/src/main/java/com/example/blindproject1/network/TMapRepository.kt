@@ -17,7 +17,7 @@ import java.net.URLEncoder
 class TMapRepository @Inject constructor() {
     
     private val client = OkHttpClient()
-    private val appKey = "YEWVxfrK4j8xTNQZURJ4z1Te4JTZs26v45fgmfn7" // Provided by user
+    private val appKey = "YEWVxfrK4j8xTNQZURJ4z1Te4JTZs26v45fgmfn7"
 
     suspend fun getPedestrianRoute(start: Location, destLat: Double, destLon: Double, startName: String, endName: String): List<Location> = withContext(Dispatchers.IO) {
         val waypoints = mutableListOf<Location>()
@@ -34,7 +34,6 @@ class TMapRepository @Inject constructor() {
                 put("endName", encodedEndName)
                 put("reqCoordType", "WGS84GEO")
                 put("resCoordType", "WGS84GEO")
-                // 옵션 30: 최단거리+계단제외 (시각장애인에게 안전한 평지 위주 탐색)
                 put("searchOption", "30") 
             }
 
@@ -86,15 +85,13 @@ class TMapRepository @Inject constructor() {
         } catch (e: Exception) {
             Log.e("TMap", "Failed to fetch route", e)
         }
-        
-        // Remove duplicate/too-close waypoints to smooth out GPS jitter targets
+
         val filteredWaypoints = mutableListOf<Location>()
         for (wp in waypoints) {
             if (filteredWaypoints.isEmpty()) {
                 filteredWaypoints.add(wp)
             } else {
                 val last = filteredWaypoints.last()
-                // GPS가 튀지 않도록 너무 가까운 점(3m 이내)은 쳐냄
                 if (last.distanceTo(wp) > 3.0) {
                     filteredWaypoints.add(wp)
                 }

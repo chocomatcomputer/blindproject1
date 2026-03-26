@@ -12,23 +12,15 @@ import kotlinx.coroutines.flow.callbackFlow
 import javax.inject.Inject
 import kotlin.math.roundToInt
 
-/**
- * Manages device orientation sensors to provide the current azimuth (heading).
- * Supports fallback to Accelerometer + Magnetometer if Rotation Vector is unavailable.
- */
 class OrientationManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
-    /**
-     * Emits azimuth in degrees (0..360). 0 = North, 90 = East, etc.
-     */
     val azimuthFlow: Flow<Float> = callbackFlow {
         val rotationMatrix = FloatArray(9)
         val orientationAngles = FloatArray(3)
-        
-        // Variables for fallback mechanism (Accel + Mag)
+
         val accelerometerReading = FloatArray(3)
         val magnetometerReading = FloatArray(3)
         var hasAccelerometer = false
@@ -75,7 +67,6 @@ class OrientationManager @Inject constructor(
             }
         }
 
-        // Try Rotation Vector first
         val rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         if (rotationVectorSensor != null) {
             sensorManager.registerListener(listener, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI)
